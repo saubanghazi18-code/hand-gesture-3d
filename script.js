@@ -10,35 +10,59 @@ camera.position.z = 5;
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 container.appendChild(renderer.domElement);
 
 // Lights
-const ambientLight = new THREE.AmbientLight(0x404040, 1.5);
+const ambientLight = new THREE.AmbientLight(0x404040, 1.8);
 scene.add(ambientLight);
 
-const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+const directionalLight = new THREE.DirectionalLight(0xffffff, 1.2);
 directionalLight.position.set(5, 10, 7);
 scene.add(directionalLight);
 
-// Objects array
+// ======================
+// OBJECTS & DRAWING
+// ======================
 const objects = [];
 let selectedObject = null;
-let isPinching = false;
 
-// Create a glowing cube
+// Drawing system
+const drawingPoints = [];          // stores current stroke points
+let isDrawing = false;
+const strokes = [];                // finished strokes (so they stay)
+const maxStrokePoints = 300;       // limit points per stroke for performance
+
+// Create a glowing line material
+const lineMaterial = new THREE.LineBasicMaterial({
+  color: 0x00f2fe,
+  linewidth: 3,
+  transparent: true,
+  opacity: 0.95
+});
+
+// Helper: create a new stroke line
+function createStroke(points) {
+  const geometry = new THREE.BufferGeometry().setFromPoints(points);
+  const line = new THREE.Line(geometry, lineMaterial.clone());
+  scene.add(line);
+  strokes.push(line);
+  return line;
+}
+
+// Spawn cube
 function createCube() {
-  const geometry = new THREE.BoxGeometry(0.6, 0.6, 0.6);
+  const geometry = new THREE.BoxGeometry(0.55, 0.55, 0.55);
   const material = new THREE.MeshStandardMaterial({
     color: 0x00f2fe,
     emissive: 0x003344,
-    metalness: 0.7,
+    metalness: 0.75,
     roughness: 0.2
   });
   const cube = new THREE.Mesh(geometry, material);
   cube.position.set(
     (Math.random() - 0.5) * 4,
-    (Math.random() - 0.5) * 3,
+    (Math.random() - 0.5) * 2.5,
     (Math.random() - 0.5) * 2
   );
   scene.add(cube);
@@ -46,7 +70,7 @@ function createCube() {
   return cube;
 }
 
-// Spawn one cube at start
+// Start with one cube
 createCube();
 
 // ======================
@@ -79,72 +103,134 @@ const cameraUtils = new Camera(videoElement, {
 });
 cameraUtils.start();
 
-// Convert normalized hand coords → Three.js world coords
+// Convert hand coords → Three.js world
 function handToWorld(x, y, z = 0) {
-  // Mirror X because we mirrored the video
-  const worldX = (0.5 - x) * 8;
-  const worldY = (0.5 - y) * 6;
-  const worldZ = z * 4;
+  const worldX = (0.5 - x) * 9;   // mirrored
+  const worldY = (0.5 - y) * 6.5;
+  const worldZ = z * 3;
   return new THREE.Vector3(worldX, worldY, worldZ);
 }
 
-// Detect pinch (thumb tip + index tip close)
+// Gesture helpers
 function isPinch(landmarks) {
   const thumb = landmarks[4];
   const index = landmarks[8];
   const dist = Math.hypot(thumb.x - index.x, thumb.y - index.y);
-  return dist < 0.05;
+  return dist < 0.045;
 }
 
-// Detect open hand (fingers extended)
 function isOpenHand(landmarks) {
-  // Simple check: tip of fingers higher than base
   return (
     landmarks[8].y < landmarks[6].y &&
     landmarks[12].y < landmarks[10].y &&
-    landmarks[16].y < landmarks[14].y
+    landmarks[16].y < landmarks[14].y &&
+    landmarks[20].y < landmarks[18].y
+  );
+}
+
+function isFist(landmarks) {
+  // All fingertips lower than their base
+  return (
+    landmarks[8].y > landmarks[6].y &&
+    landmarks[12].y > landmarks[10].y &&
+    landmarks[16].y > landmarks[14].y &&
+    landmarks[20].y > landmarks[18].y
   );
 }
 
 let lastSpawnTime = 0;
+let lastClearTime = 0;
 
 function onResults(results) {
-  // Draw hand landmarks on small canvas
+  // Draw landmarks on small preview
   canvasCtx.save();
   canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
   canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
   if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
     const landmarks = results.multiHandLandmarks[0];
-    
-    // Draw connections
+
     drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, { color: '#00FF9D', lineWidth: 2 });
     drawLandmarks(canvasCtx, landmarks, { color: '#00F2FE', lineWidth: 1, radius: 3 });
 
     const indexTip = landmarks[8];
-    const palm = landmarks[9]; // roughly center of palm
-
     const worldPos = handToWorld(indexTip.x, indexTip.y);
 
-    // === GESTURES ===
     const pinching = isPinch(landmarks);
     const open = isOpenHand(landmarks);
+    const fist = isFist(landmarks);
 
-    // Spawn cube when open hand (with cooldown)
-    if (open && !pinching && Date.now() - lastSpawnTime > 1500) {
+    // ========== DRAWING LOGIC ==========
+    // When not pinching and not fist → draw with index finger
+    if (!pinching && !fist) {
+      if (!isDrawing) {
+        isDrawing = true;
+        drawingPoints.length = 0; // start new stroke
+      }
+
+      // Add point if moved enough (prevents too many points)
+      if (drawingPoints.length === 0 || 
+          drawingPoints[drawingPoints.length - 1].distanceTo(worldPos) > 0.04) {
+        drawingPoints.push(worldPos.clone());
+
+        // Keep stroke length reasonable
+        if (drawingPoints.length > maxStrokePoints) {
+          drawingPoints.shift();
+        }
+      }
+
+      // Update or create temporary line for current stroke
+      if (drawingPoints.length > 1) {
+        // Remove previous temporary line if exists
+        if (window.tempLine) {
+          scene.remove(window.tempLine);
+        }
+        const geo = new THREE.BufferGeometry().setFromPoints(drawingPoints);
+        window.tempLine = new THREE.Line(geo, lineMaterial);
+        scene.add(window.tempLine);
+      }
+
+      statusEl.textContent = "✍️ Writing...";
+    } else {
+      // Finish the current stroke
+      if (isDrawing && drawingPoints.length > 2) {
+        createStroke([...drawingPoints]);
+        if (window.tempLine) {
+          scene.remove(window.tempLine);
+          window.tempLine = null;
+        }
+      }
+      isDrawing = false;
+      drawingPoints.length = 0;
+    }
+
+    // ========== CLEAR DRAWING (Fist) ==========
+    if (fist && Date.now() - lastClearTime > 1200) {
+      // Remove all strokes
+      strokes.forEach(s => scene.remove(s));
+      strokes.length = 0;
+      if (window.tempLine) {
+        scene.remove(window.tempLine);
+        window.tempLine = null;
+      }
+      lastClearTime = Date.now();
+      statusEl.textContent = "Drawing cleared!";
+    }
+
+    // ========== SPAWN CUBE (Open hand) ==========
+    if (open && !pinching && Date.now() - lastSpawnTime > 1600) {
       createCube();
       lastSpawnTime = Date.now();
       statusEl.textContent = "Spawned new cube!";
     }
 
-    // Grab logic
+    // ========== GRAB OBJECTS (Pinch) ==========
     if (pinching) {
       if (!selectedObject) {
-        // Find closest object
         let minDist = Infinity;
         objects.forEach(obj => {
           const dist = obj.position.distanceTo(worldPos);
-          if (dist < 1.2 && dist < minDist) {
+          if (dist < 1.3 && dist < minDist) {
             minDist = dist;
             selectedObject = obj;
           }
@@ -152,17 +238,18 @@ function onResults(results) {
       }
 
       if (selectedObject) {
-        selectedObject.position.lerp(worldPos, 0.3);
-        selectedObject.rotation.x += 0.05;
-        selectedObject.rotation.y += 0.07;
+        selectedObject.position.lerp(worldPos, 0.35);
+        selectedObject.rotation.x += 0.04;
+        selectedObject.rotation.y += 0.06;
         statusEl.textContent = "Grabbing object...";
       }
     } else {
       selectedObject = null;
-      statusEl.textContent = "Tracking hand • Open hand to spawn • Pinch to grab";
     }
+
   } else {
-    statusEl.textContent = "No hand detected";
+    statusEl.textContent = "Show your hand to the camera";
+    isDrawing = false;
   }
 
   canvasCtx.restore();
@@ -174,12 +261,11 @@ function onResults(results) {
 function animate() {
   requestAnimationFrame(animate);
 
-  // Gentle floating animation for non-selected objects
   objects.forEach((obj, i) => {
     if (obj !== selectedObject) {
-      obj.rotation.x += 0.005;
-      obj.rotation.y += 0.008;
-      obj.position.y += Math.sin(Date.now() * 0.001 + i) * 0.002;
+      obj.rotation.x += 0.004;
+      obj.rotation.y += 0.006;
+      obj.position.y += Math.sin(Date.now() * 0.001 + i) * 0.0015;
     }
   });
 
@@ -187,7 +273,7 @@ function animate() {
 }
 animate();
 
-// Handle resize
+// Resize
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
