@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hand Gesture 3D | Tony Stark Style</title>
+  <link rel="stylesheet" href="style.css" />
+  
+  <!-- MediaPipe -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+  
+  <!-- Three.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+  <div class="container">
+    <video id="webcam" autoplay playsinline></video>
+    <canvas id="output"></canvas>
+    <div id="three-container"></div>
+    
+    <div class="ui">
+      <h1>Hand Gesture 3D</h1>
+      <p>Open hand → Spawn cube | Pinch → Grab | Point → Draw</p>
+      <div id="status">Starting camera...</div>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
